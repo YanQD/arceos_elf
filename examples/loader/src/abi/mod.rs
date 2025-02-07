@@ -2,6 +2,7 @@ mod mem;
 mod init;
 mod thread;
 mod string;
+mod process;
 
 use init::{
     abi_exit, abi_fini, abi_hello, 
@@ -11,6 +12,7 @@ use init::{
 };
 
 use mem::{abi_calloc, abi_free, abi_malloc, abi_realloc};
+use process::abi_fork;
 use string::abi_strlen;
 use thread::{
     abi_pthread_create, abi_pthread_exit, abi_pthread_join, abi_pthread_mutex_destroy, abi_pthread_mutex_init, abi_pthread_mutex_lock, abi_pthread_mutex_unlock, abi_pthread_self
@@ -53,7 +55,6 @@ register_abi_table! {
     ("pthread_mutex_init", abi_pthread_mutex_init),
     ("pthread_mutex_lock", abi_pthread_mutex_lock),
     ("pthread_mutex_unlock", abi_pthread_mutex_unlock),
-    // TODO
     ("pthread_mutex_destroy", abi_pthread_mutex_destroy),
     ("printf", abi_printf),
     ("puts", abi_puts),
@@ -65,5 +66,6 @@ register_abi_table! {
     ("free", abi_free),
     ("realloc", abi_realloc),
     ("calloc", abi_calloc),
-    ("strlen", abi_strlen)
+    ("strlen", abi_strlen),
+    ("fork", abi_fork)
 }

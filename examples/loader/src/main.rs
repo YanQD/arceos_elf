@@ -9,10 +9,13 @@ use abi::abi_entry;
 use axlog::info;
 
 mod abi;
+mod config;
 mod elf;
 mod load;
+mod mem;
+mod fs;
+mod process;
 
-// use heap_allocator::init_heap;
 use load::load_elf;
 
 #[unsafe(no_mangle)]
