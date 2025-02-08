@@ -103,6 +103,7 @@ impl MapArea {
     }
 
     /// Set the shared flag of the area.
+    #[allow(unused)]
     pub(crate) fn set_shared(&mut self, shared: bool) {
         self.shared = shared;
     }
@@ -113,6 +114,7 @@ impl MapArea {
     }
 
     /// Deallocate all phys pages and unmap the area in page table.
+    #[allow(unused)]
     pub fn dealloc(&mut self, page_table: &mut PageTable) {
         let tlb_flush = page_table.unmap_region(self.vaddr, self.size(), true).unwrap();
         tlb_flush.flush_all();
@@ -120,6 +122,7 @@ impl MapArea {
     }
 
     /// 如果处理失败，返回false，此时直接退出当前程序
+    #[allow(unused)]
     pub fn handle_page_fault(
         &mut self,
         addr: VirtAddr,
@@ -194,6 +197,7 @@ impl MapArea {
 
     /// Deallocate some pages from the start of the area.
     /// This function will unmap them in a page table. You need to flush TLB after this function.
+    #[allow(unused)]
     pub fn shrink_left(&mut self, new_start: VirtAddr, page_table: &mut PageTable) {
         assert!(new_start.is_aligned_4k());
 
@@ -212,6 +216,7 @@ impl MapArea {
 
     /// Deallocate some pages from the end of the area.
     /// This function will unmap them in a page table. You need to flush TLB after this function.
+    #[allow(unused)]
     pub fn shrink_right(&mut self, new_end: VirtAddr, page_table: &mut PageTable) {
         assert!(new_end.is_aligned_4k());
 
@@ -230,6 +235,7 @@ impl MapArea {
     }
 
     /// Split this area into 2.
+    #[allow(unused)]
     pub fn split(&mut self, addr: VirtAddr) -> Self {
         assert!(addr.is_aligned_4k());
 
@@ -247,6 +253,7 @@ impl MapArea {
     }
 
     /// Split this area into 3.
+    #[allow(unused)]
     pub fn split3(&mut self, start: VirtAddr, end: VirtAddr) -> (Self, Self) {
         assert!(start.is_aligned_4k());
         assert!(end.is_aligned_4k());
@@ -290,7 +297,7 @@ impl MapArea {
     /// Create a second area in the right part of the area, [self.vaddr, left_end) and
     /// [right_start, self.end_va()).
     /// This function will unmap deleted pages in a page table. You need to flush TLB after calling
-    /// this.
+    #[allow(unused)]
     pub fn remove_mid(
         &mut self,
         left_end: VirtAddr,
@@ -353,6 +360,7 @@ impl MapArea {
     }
 
     /// Fill `self` with `byte`.
+    #[allow(unused)]
     pub fn fill(&mut self, byte: u8) {
         self.pages.iter_mut().for_each(|page| {
             if let Some(page) = page {
@@ -362,27 +370,32 @@ impl MapArea {
     }
 
     /// If [start, end) overlaps with self.
+    #[allow(unused)]
     pub fn overlap_with(&self, start: VirtAddr, end: VirtAddr) -> bool {
         self.vaddr <= start && start < self.end_va() || start <= self.vaddr && self.vaddr < end
     }
 
     /// If [start, end] contains self.
+    #[allow(unused)]
     pub fn contained_in(&self, start: VirtAddr, end: VirtAddr) -> bool {
         start <= self.vaddr && self.end_va() <= end
     }
 
     /// If self contains [start, end].
+    #[allow(unused)]
     pub fn contains(&self, start: VirtAddr, end: VirtAddr) -> bool {
         self.vaddr <= start && end <= self.end_va()
     }
 
     /// If self strictly contains [start, end], which stands for the start and end are not equal to self's.
+    #[allow(unused)]
     pub fn strict_contain(&self, start: VirtAddr, end: VirtAddr) -> bool {
         self.vaddr < start && end < self.end_va()
     }
 
     /// Update area's mapping flags and write it to page table. You need to flush TLB after calling
     /// this function.
+    #[allow(unused)]
     pub fn update_flags(&mut self, flags: MappingFlags, page_table: &mut PageTable) {
         // 更新内部标志
         self.flags = flags;

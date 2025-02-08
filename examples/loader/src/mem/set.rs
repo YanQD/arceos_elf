@@ -18,6 +18,7 @@ impl MemorySet {
     }
 
     /// Create a new empty MemorySet.
+    #[allow(unused)]
     pub fn new_empty() -> Self {
         Self {
             page_table: PageTable::try_new().expect("Error allocating page table."),
@@ -52,11 +53,13 @@ impl MemorySet {
     }
 
     /// The root page table physical address.
+    #[allow(unused)]
     pub fn page_table_root_ppn(&self) -> PhysAddr {
         self.page_table.root_paddr()
     }
 
     /// The max virtual address of the areas in this memory set.
+    #[allow(unused)]
     pub fn max_va(&self) -> VirtAddr {
         self.owned_mem
             .last_key_value()
@@ -65,6 +68,7 @@ impl MemorySet {
     }
 
     /// 将用户分配的页面从页表中直接解映射，内核分配的页面依然保留
+    #[allow(unused)]
     pub fn unmap_user_areas(&mut self) {
         for (_, area) in self.owned_mem.iter_mut() {
             area.dealloc(&mut self.page_table);
@@ -110,6 +114,7 @@ impl MemorySet {
     /// Make [start, end) unmapped and dealloced. You need to flush TLB after this.
     ///
     /// NOTE: modified map area will have the same PhysAddr.
+    #[allow(unused)]
     pub fn split_for_area(&mut self, start: VirtAddr, size: usize) {
         let end = start + size;
         assert!(end.is_aligned_4k());

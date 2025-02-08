@@ -1,30 +1,18 @@
-use core::ops::Deref;
 use core::ptr::copy_nonoverlapping;
-use core::str::from_utf8;
+use core::slice::from_raw_parts;
 extern crate alloc;
 use alloc::sync::Arc;
-use alloc::{
-    string::{String, ToString},
-    vec,
-    vec::Vec,
-};
 use axerrno::{AxError, AxResult};
 use axhal::mem::VirtAddr;
 use axhal::paging::MappingFlags;
-use axhal::time::{NANOS_PER_MICROS, NANOS_PER_SEC};
-use axlog::{info, warn};
-use axtask::{current, yield_now, AxTaskRef, CurrentTask, TaskId};
-use crate::config::{KERNEL_PROCESS_ID, MAX_USER_HEAP_SIZE, MAX_USER_STACK_SIZE, TASK_STACK_SIZE, USER_HEAP_BASE, USER_STACK_TOP};
+use axlog::{debug, info, warn};
+use axtask::{current, AxTaskRef, CurrentTask, TaskExtRef};
+use crate::config::{HEAP_BASE, MAX_HEAP_SIZE};
+use crate::elf::elf::{get_elf_entry, get_elf_segments, get_relocate_pairs};
+use crate::elf::load::{EXEC_ZONE_START, PLASH_START};
 use crate::mem::MemorySet;
-use crate::process::elf::{get_app_stack_region, get_auxv_vector, get_elf_entry, get_elf_segments, get_relocate_pairs};
 
-use axsync::Mutex;
-use core::sync::atomic::AtomicI32;
-
-use xmas_elf::program::SegmentData;
-
-use crate::process::flags::WaitStatus;
-use crate::process::{Process, PID2PC, TID2TASK};
+use super::{Process, PID2PC, TID2TASK};
 
 // /// 初始化内核调度进程
 // pub fn init_kernel_process() {
@@ -47,14 +35,15 @@ use crate::process::{Process, PID2PC, TID2TASK};
 //     PID2PC.lock().insert(kernel_process.pid(), kernel_process);
 // }
 
-// /// return the `Arc<Process>` of the current process
-// pub fn current_process() -> Arc<Process> {
-//     let current_task = current();
+/// return the `Arc<Process>` of the current process
+#[allow(unused)]
+pub fn current_process() -> Arc<Process> {
+    let current_task = current();
 
-//     let current_process = Arc::clone(PID2PC.lock().get(&current_task.get_process_id()).unwrap());
+    let current_process = Arc::clone(PID2PC.lock().get(&current_task.task_ext().get_process_id()).unwrap());
 
-//     current_process
-// }
+    current_process
+}
 
 // /// 退出当前任务
 // pub fn exit_current_task(exit_code: i32) -> ! {
@@ -118,32 +107,22 @@ use crate::process::{Process, PID2PC, TID2TASK};
 //     axtask::exit(exit_code);
 // }
 
-/// 返回应用程序入口，用户栈底，用户堆底
+/// 返回 ELF 程序入口，堆底
 pub fn load_app(
-    name: String,
-    mut args: Vec<String>,
-    envs: &Vec<String>,
     memory_set: &mut MemorySet,
-) -> AxResult<(VirtAddr, VirtAddr, VirtAddr)> {
-    if name.ends_with(".sh") {
-        args = [vec![String::from("busybox"), String::from("sh")], args].concat();
-        return load_app("busybox".to_string(), args, envs, memory_set);
-    }
-    let elf_data = if let Ok(ans) = axfs::api::read(name.as_str()) {
-        ans
-    } else {
-        // exit(0)
-        info!("App not found: {}", name);
-        return Err(AxError::NotFound);
-    };
+) -> AxResult<(VirtAddr, VirtAddr)> {
+    debug!("Load payload ...");
+    let elf_size = unsafe { *(PLASH_START as *const usize) };
+    debug!("ELF size: 0x{:x}", elf_size);
+    let elf_data = unsafe { from_raw_parts((PLASH_START + 0x8) as *const u8, elf_size) };
+
     let elf = xmas_elf::ElfFile::new(&elf_data).expect("Error parsing app ELF file.");
-    info!("load app args: {:?} name: {}", args, name);
-    let elf_base_addr = Some(0x400_0000);
+    let elf_base_addr = Some(EXEC_ZONE_START as usize);
     warn!("The elf base addr may be different in different arch!");
-    // let (entry, segments, relocate_pairs) = parse_elf(&elf, elf_base_addr);
     let entry = get_elf_entry(&elf, elf_base_addr);
     let segments = get_elf_segments(&elf, elf_base_addr);
     let relocate_pairs = get_relocate_pairs(&elf, elf_base_addr);
+    
     for segment in segments {
         memory_set.new_region(
             VirtAddr::from(segment.vaddr.as_usize()),
@@ -161,52 +140,23 @@ pub fn load_app(
     }
 
     // Now map the stack and the heap
-    let heap_start = VirtAddr::from(USER_HEAP_BASE);
-    let heap_data = [0_u8].repeat(MAX_USER_HEAP_SIZE);
+    let heap_start = VirtAddr::from(HEAP_BASE);
+    let heap_data = [0_u8].repeat(MAX_HEAP_SIZE);
     memory_set.new_region(
         heap_start,
-        MAX_USER_HEAP_SIZE,
-        MappingFlags::READ | MappingFlags::WRITE | MappingFlags::USER,
+        MAX_HEAP_SIZE,
+        MappingFlags::READ | MappingFlags::WRITE,
         Some(&heap_data),
     );
+
     info!(
         "[new region] user heap: [{:?}, {:?})",
         heap_start,
-        heap_start + MAX_USER_HEAP_SIZE
+        heap_start + MAX_HEAP_SIZE
     );
 
-    let auxv = get_auxv_vector(&elf, elf_base_addr);
-
-    let stack_top = VirtAddr::from(USER_STACK_TOP);
-    let stack_size = MAX_USER_STACK_SIZE;
-
-    let (stack_data, stack_bottom) = get_app_stack_region(args, envs, auxv, stack_top, stack_size);
-    memory_set.new_region(
-        stack_top,
-        stack_size,
-        MappingFlags::USER | MappingFlags::READ | MappingFlags::WRITE,
-        Some(&stack_data),
-    );
-    info!(
-        "[new region] user stack: [{:?}, {:?})",
-        stack_top,
-        stack_top + stack_size
-    );
-    Ok((entry, stack_bottom.into(), heap_start))
+    Ok((entry, heap_start))
 }
-
-// /// 统计时间输出
-// /// (用户态秒，用户态微秒，内核态秒，内核态微秒)
-// pub fn time_stat_output() -> (usize, usize, usize, usize) {
-//     let curr_task = current();
-//     let (utime_ns, stime_ns) = curr_task.time_stat_output();
-//     (
-//         utime_ns / NANOS_PER_SEC as usize,
-//         utime_ns / NANOS_PER_MICROS as usize,
-//         stime_ns / NANOS_PER_SEC as usize,
-//         stime_ns / NANOS_PER_MICROS as usize,
-//     )
-// }
 
 // /// To deal with the page fault
 // pub fn handle_page_fault(addr: VirtAddr, flags: MappingFlags) {
@@ -282,27 +232,32 @@ pub fn load_app(
 //     Err(answer_status)
 // }
 
-// /// 以进程作为中转调用 task 的 yield
-// pub fn yield_now_task() {
-//     axtask::yield_now();
-// }
+/// 以进程作为中转调用 task 的 yield
+#[allow(unused)]
+pub fn yield_now_task() {
+    axtask::yield_now();
+}
 
-// /// 以进程作为中转调用 task 的 sleep
-// pub fn sleep_now_task(dur: core::time::Duration) {
-//     axtask::sleep(dur);
-// }
+/// 以进程作为中转调用 task 的 sleep
+#[allow(unused)]
+pub fn sleep_now_task(dur: core::time::Duration) {
+    axtask::sleep(dur);
+}
 
-// /// current running task
-// pub fn current_task() -> CurrentTask {
-//     axtask::current()
-// }
+/// current running task
+#[allow(unused)]
+pub fn current_task() -> CurrentTask {
+    axtask::current()
+}
 
-// /// 设置当前任务的 clear_child_tid
-// pub fn set_child_tid(tid: usize) {
-//     todo!()
-// }
+/// 设置当前任务的 clear_child_tid
+#[allow(unused)]
+pub fn set_child_tid(tid: usize) {
+    todo!()
+}
 
-// /// Get the task reference by tid
-// pub fn get_task_ref(tid: u64) -> Option<AxTaskRef> {
-//     TID2TASK.lock().get(&tid).cloned()
-// }
+/// Get the task reference by tid
+#[allow(unused)]
+pub fn get_task_ref(tid: u64) -> Option<AxTaskRef> {
+    TID2TASK.lock().get(&tid).cloned()
+}

@@ -212,17 +212,17 @@ pub trait FileExt: Read + Write + Seek + AsAny + Send + Sync {
     fn read_from_seek(&mut self, pos: SeekFrom, buf: &mut [u8]) -> AxResult<usize> {
         let old_pos = self.seek(SeekFrom::Current(0))?;
         let _ = self.seek(pos)?;
-     
+    
         let read_len = match self.read_exact(buf) {
             Ok(()) => Ok(buf.len()),
             Err(e) => Err(e),
         };
-     
+    
         let new_pos = self.seek(SeekFrom::Start(old_pos))?;
         assert_eq!(old_pos, new_pos);
         
         read_len
-     }
+    }
 
     /// Write to position without changing cursor.
     fn write_to_seek(&mut self, pos: SeekFrom, buf: &[u8]) -> AxResult<usize> {

@@ -11,16 +11,20 @@ use axlog::info;
 mod abi;
 mod config;
 mod elf;
-mod load;
 mod mem;
 mod fs;
 mod process;
 
-use load::load_elf;
+use elf::load::load_elf;
+use mem::MemorySet;
+use process::load_app;
 
 #[unsafe(no_mangle)]
 fn main() {
     let entry = load_elf();
+
+    let mut memory_set = MemorySet::new_memory_set();
+    let _ = load_app(&mut memory_set);
 
     info!("Execute app ...");
     unsafe { core::arch::asm!("

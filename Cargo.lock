@@ -133,7 +133,6 @@ dependencies = [
  "axtask",
  "bitflags 2.6.0",
  "cfg-if",
- "elf",
  "memory_addr",
  "page_table_multiarch",
  "printf-compat",
@@ -938,11 +937,6 @@ name = "either"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a26ae43d7bcc3b814de94796a5e736d4029efb0ee900c12e2d54c993ad1a1e07"
-
-[[package]]
-name = "elf"
-version = "0.8.0-dev"
-source = "git+https://github.com/cole14/rust-elf/?rev=cdc6769#cdc67691a79a18995e74ce7b65682db4c59c260c"
 
 [[package]]
 name = "embedded-hal"

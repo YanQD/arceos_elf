@@ -1,4 +1,3 @@
-//! todo 重构 fd_table, fd_allocator
 extern crate alloc;
 use core::sync::atomic::{AtomicI32, AtomicU64};
 
@@ -24,6 +23,7 @@ pub struct FdManager {
 }
 
 impl FdManager {
+    #[allow(unused)]
     pub fn new(
         fd_table: FdTable,
         cwd_src: Arc<Mutex<String>>,
@@ -38,10 +38,12 @@ impl FdManager {
         }
     }
 
+    #[allow(unused)]
     pub fn get_limit(&self) -> u64 {
         self.limit.load(core::sync::atomic::Ordering::Acquire)
     }
 
+    #[allow(unused)]
     pub fn set_limit(&self, new_limit: u64) {
         self.limit
             .store(new_limit, core::sync::atomic::Ordering::Release)
@@ -52,6 +54,7 @@ impl FdManager {
         self.umask.load(core::sync::atomic::Ordering::Acquire)
     }
 
+    #[allow(unused)]
     /// 设置新的 mask，返回旧的 mask
     pub fn set_mask(&self, new_mask: i32) -> i32 {
         let old_mask = self.umask.load(core::sync::atomic::Ordering::Acquire);
@@ -60,6 +63,12 @@ impl FdManager {
         old_mask
     }
 
+    #[allow(unused)]
+    pub fn clone_fd_table(&self) -> FdTable {
+        Arc::new(Mutex::new(self.fd_table.lock().clone()))
+    }
+
+    #[allow(unused)]
     /// 在执行 `exec()` 时关闭标记为 `CLOEXEC` 的文件
     pub fn close_on_exec(&self) {
         let mut fd_table = self.fd_table.lock();

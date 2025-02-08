@@ -60,16 +60,19 @@ impl PhysPage {
     }
 
     /// Forms a slice that can read data.
+    #[allow(unused)]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.as_ptr(), PAGE_SIZE_4K) }
     }
 
     /// Forms a mutable slice that can write data.
+    #[allow(unused)]
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), PAGE_SIZE_4K) }
     }
 
     /// Fill `self` with `byte`.
+    #[allow(unused)]
     pub fn fill(&mut self, byte: u8) {
         unsafe { core::ptr::write_bytes(self.as_mut_ptr(), byte, PAGE_SIZE_4K) }
     }

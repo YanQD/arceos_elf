@@ -1,40 +1,50 @@
+pub mod elf;
+pub mod load;
+
 use core::fmt;
-
 use axlog::debug;
-use elf::{abi::EM_RISCV, endian::LittleEndian, ElfBytes};
+use xmas_elf::{ElfFile, header};
 
-pub fn verify_elf_header(elf: &ElfBytes<LittleEndian>) -> Result<(), LoadError> {
-    let header: elf::file::FileHeader<LittleEndian> = elf.ehdr;
+pub fn verify_elf_header(elf: &ElfFile) -> Result<(), LoadError> {
+    let header = elf.header;
+    let magic = header.pt1.magic;
     debug!("ELF header: {:?}", header);
+    assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
 
     // 1. 验证目标架构
-    if header.e_machine != EM_RISCV {
-        debug!("Wrong architecture: expected RISC-V, got {:?}", header.e_machine);
+    if header.pt2.machine().as_machine() != header::Machine::RISC_V {
+        debug!("Wrong architecture: expected RISC-V, got {:?}", header.pt2.machine());
         return Err(LoadError::WrongArchitecture);
     }
 
     // 2. 验证程序头表是否存在
-    if header.e_phnum == 0 {
+    if header.pt2.ph_count() == 0 {
         debug!("No program headers found");
         return Err(LoadError::NoSegments);
     }
 
     // 3. 验证 ELF 版本
-    if header.version != EV_CURRENT {
+    if header.pt2.version() != 1 {
         debug!("Invalid ELF version");
         return Err(LoadError::InvalidVersion);
     }
 
     // 4. 验证入口点是否有效
-    if header.e_entry == 0 {
+    if header.pt2.entry_point() == 0 {
         debug!("Invalid entry point");
         return Err(LoadError::InvalidEntryPoint);
     }
 
     // 5. 验证程序头表偏移
-    if header.e_phoff == 0 {
+    if header.pt2.ph_offset() == 0 {
         debug!("Invalid program header offset");
         return Err(LoadError::InvalidProgramHeaderOffset);
+    }
+
+    // 6. 验证 ELF 魔数
+    if header.pt1.magic != [ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3] {
+        debug!("Invalid ELF magic number");
+        return Err(LoadError::InvalidMagic);
     }
 
     Ok(())
@@ -72,9 +82,8 @@ impl fmt::Display for LoadError {
     }
 }
 
-// ELF 常量定义（如果需要）
+// ELF 常量定义
 const ELFMAG0: u8 = 0x7f;
 const ELFMAG1: u8 = b'E';
 const ELFMAG2: u8 = b'L';
 const ELFMAG3: u8 = b'F';
-const EV_CURRENT: u32 = 1;

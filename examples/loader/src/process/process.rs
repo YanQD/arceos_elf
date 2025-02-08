@@ -8,15 +8,13 @@ use alloc::vec::Vec;
 use alloc::{collections::BTreeMap, string::String};
 use axerrno::{AxError, AxResult};
 use axhal::arch::write_page_table_root;
-use axhal::arch::TrapFrame;
-use axhal::mem::{phys_to_virt, VirtAddr};
 
-use axhal::time::monotonic_time_nanos as current_time_nanos;
 use axlog::{debug, error};
 use axsync::Mutex;
 use axtask::current;
 use axtask::spawn_task;
 use axtask::AxTaskRef;
+use axtask::TaskExtMut;
 use axtask::TaskId;
 use axtask::TaskInner;
 use crate::config::KERNEL_PROCESS_ID;
@@ -27,12 +25,12 @@ use crate::mem::MemorySet;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use crate::process::fd_manager::{FdManager, FdTable};
-use crate::process::flags::CloneFlags;
 
 use crate::process::stdio::{Stderr, Stdin, Stdout};
 use crate::process::load_app;
 
-use super::app_init_context;
+use super::read_trapframe_from_kstack;
+use super::set_ret_code;
 use super::write_trapframe_to_kstack;
 
 /// Map from task id to arc pointer of task
@@ -40,16 +38,16 @@ pub static TID2TASK: Mutex<BTreeMap<u64, AxTaskRef>> = Mutex::new(BTreeMap::new(
 
 /// Map from process id to arc pointer of process
 pub static PID2PC: Mutex<BTreeMap<u64, Arc<Process>>> = Mutex::new(BTreeMap::new());
+
 const FD_LIMIT_ORIGIN: usize = 1025;
 
+#[allow(unused)]
 /// The process control block
 pub struct Process {
     /// 进程号
     pid: u64,
     /// 父进程号 
     pub parent: AtomicU64,
-    /// 栈大小
-    pub stack_size: AtomicU64,
     /// 子进程
     pub children: Mutex<Vec<Arc<Process>>>,
     /// 所管理的线程
@@ -73,77 +71,98 @@ pub struct Process {
 
 impl Process {
     /// get the process id
+    #[allow(unused)]
     pub fn pid(&self) -> u64 {
         self.pid
     }
+    
     /// get the page table token
+    #[allow(unused)]
     pub fn page_table_token(&self) -> u64 {
         self.page_table_token.load(Ordering::Acquire) 
     }
-    /// TODO: 改变了新创建的任务栈大小，但未实现当前任务的栈扩展
-    /// set stack size
-    pub fn set_stack_limit(&self, limit: u64) {
-        self.stack_size.store(limit, Ordering::Release)
-    }
-    /// get stack size
-    pub fn get_stack_limit(&self) -> u64 {
-        self.stack_size.load(Ordering::Acquire)
-    }
     /// get the parent process id
+    #[allow(unused)]
     pub fn get_parent(&self) -> u64 {
         self.parent.load(Ordering::Acquire)
     }
+
     /// set the parent process id
+    #[allow(unused)]
     pub fn set_parent(&self, parent: u64) {
         self.parent.store(parent, Ordering::Release)
     }
+
     /// get the exit code of the process
+    #[allow(unused)]
     pub fn get_exit_code(&self) -> i32 {
         self.exit_code.load(Ordering::Acquire)
     }
+    
     /// set the exit code of the process
+    #[allow(unused)]
     pub fn set_exit_code(&self, exit_code: i32) {
         self.exit_code.store(exit_code, Ordering::Release)
     }
+    
     /// whether the process is a zombie process
+    #[allow(unused)]
     pub fn get_zombie(&self) -> bool {
         self.is_zombie.load(Ordering::Acquire)
     }
+
     /// set the process as a zombie process
+    #[allow(unused)]
     pub fn set_zombie(&self, status: bool) {
         self.is_zombie.store(status, Ordering::Release)
     }
+
     /// get the heap top of the process
+    #[allow(unused)]
     pub fn get_heap_top(&self) -> u64 {
         self.heap_top.load(Ordering::Acquire)
     }
+
     /// set the heap top of the process
+    #[allow(unused)]
     pub fn set_heap_top(&self, top: u64) {
         self.heap_top.store(top, Ordering::Release)
     }
+
     /// get the heap bottom of the process
+    #[allow(unused)]
     pub fn get_heap_bottom(&self) -> u64 {
         self.heap_bottom.load(Ordering::Acquire)
     }
+
     /// set the heap bottom of the process
+    #[allow(unused)]
     pub fn set_heap_bottom(&self, bottom: u64) {
         self.heap_bottom.store(bottom, Ordering::Release)
     }
+    
     /// set the executable file path of the process
+    #[allow(unused)]
     pub fn set_file_path(&self, path: String) {
         let mut file_path = self.file_path.lock();
         *file_path = path;
     }
+
     /// set the page table token of the process
+    #[allow(unused)]
     pub fn set_page_table_token(&self, token: u64) {
         self.page_table_token.store(token, Ordering::Release);
     }
+    
     /// get the executable file path of the process
+    #[allow(unused)]
     pub fn get_file_path(&self) -> String {
         (*self.file_path.lock()).clone()
     }
+
     /// 若进程运行完成，则获取其返回码
     /// 若正在运行（可能上锁或没有上锁），则返回None
+    #[allow(unused)]
     pub fn get_code_if_exit(&self) -> Option<i32> {
         if self.get_zombie() {
             return Some(self.get_exit_code());
@@ -154,9 +173,9 @@ impl Process {
 
 impl Process {
     /// 创建一个新的进程
+    #[allow(unused)]
     pub fn new(
         pid: u64,
-        stack_size: u64,
         parent: u64,
         memory_set: Mutex<Arc<Mutex<MemorySet>>>,
         heap_bottom: u64,
@@ -172,7 +191,6 @@ impl Process {
 
         Self {
             pid,
-            stack_size: AtomicU64::new(stack_size),
             parent: AtomicU64::new(parent),
             children: Mutex::new(Vec::new()),
             tasks: Mutex::new(Vec::new()),
@@ -189,20 +207,19 @@ impl Process {
     }
 
     /// 根据给定参数创建一个新的进程，作为初始进程
-    pub fn init(args: Vec<String>, envs: &Vec<String>) -> AxResult<AxTaskRef> {
-        let mut path = args[0].clone();
+    #[allow(unused)]
+    pub fn init(mut path: String) -> AxResult<AxTaskRef> {
         let mut memory_set = MemorySet::new_memory_set();
 
         let page_table_token = memory_set.page_table_token();
         if page_table_token != 0 {
             unsafe {
                 write_page_table_root(page_table_token.into());
-                riscv::register::sstatus::set_sum();
             };
         }
 
-        let (entry, user_stack_bottom, heap_bottom) =
-            if let Ok(ans) = load_app(path.clone(), args, envs, &mut memory_set) {
+        let (entry, heap_bottom) = 
+            if let Ok(ans) = load_app(&mut memory_set) {
                 ans
             } else {
                 error!("Failed to load app {}", path);
@@ -226,8 +243,7 @@ impl Process {
 
         let new_process = Arc::new(Self::new(
             TaskId::new().as_u64(),
-            TASK_STACK_SIZE as u64,
-            KERNEL_PROCESS_ID, // 父进程如何确定
+            KERNEL_PROCESS_ID,
             Mutex::new(Arc::new(Mutex::new(memory_set))),
             heap_bottom.as_usize() as u64,
             Arc::new(Mutex::new(String::from("/").into())),
@@ -244,6 +260,15 @@ impl Process {
 
         new_process.set_file_path(path.clone());
 
+        let mut task_inner = TaskInner::new(
+            || {},
+            path.to_string(),
+            TASK_STACK_SIZE,
+        );
+
+        task_inner.task_ext_mut().set_leader(true);
+        task_inner.task_ext_mut().set_process_id(new_process.pid());
+
         let new_task = spawn_task(TaskInner::new(
             || {},
             path.to_string(),
@@ -254,9 +279,13 @@ impl Process {
             .lock()
             .insert(new_task.id().as_u64(), Arc::clone(&new_task));
 
-        let new_trap_frame = app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
-        // // 需要将完整内容写入到内核栈上
-        write_trapframe_to_kstack(new_task.kernel_stack_top().unwrap().as_usize(), &new_trap_frame);
+        // // 准备参数等数据并放入内核栈
+        // let stack_top = new_task.kernel_stack_top().unwrap();
+
+        // let new_trap_frame = app_init_context(entry.as_usize(), stack_top.as_usize());
+
+        // write_trapframe_to_kstack(new_task.kernel_stack_top().unwrap().as_usize(), &new_trap_frame);
+
         new_process.tasks.lock().push(Arc::clone(&new_task));
 
         PID2PC
@@ -277,99 +306,161 @@ impl Process {
 }
 
 impl Process {
-    /// 将当前进程替换为指定的程序
-    /// args为传入的参数
-    /// 任务的统计时间会被重置
-    pub fn exec(&self, name: String, args: Vec<String>, envs: &Vec<String>) -> AxResult<()> {
-        // 首先要处理原先进程的资源
-        // 处理分配的页帧
-        // 之后加入额外的东西之后再处理其他的包括信号等因素
-        // 不是直接删除原有地址空间，否则构建成本较高。
+    // /// 将当前进程替换为指定的程序
+    // /// args为传入的参数
+    // /// 任务的统计时间会被重置
+    // #[allow(unused)]
+    // pub fn exec(&self, name: String, args: Vec<String>, envs: &Vec<String>) -> AxResult<()> {
+    //     // 首先要处理原先进程的资源
+    //     // 处理分配的页帧
+    //     // 之后加入额外的东西之后再处理其他的包括信号等因素
+    //     // 不是直接删除原有地址空间，否则构建成本较高。
 
-        if Arc::strong_count(&self.memory_set.lock()) == 1 {
-            self.memory_set.lock().lock().unmap_user_areas();
-        } else {
-            let memory_set = Arc::new(Mutex::new(MemorySet::clone_or_err(
-                &mut self.memory_set.lock().lock(),
-            )?));
-            *self.memory_set.lock() = memory_set;
-            self.memory_set.lock().lock().unmap_user_areas();
-            let new_page_table = self.memory_set.lock().lock().page_table_token();
-            let mut tasks = self.tasks.lock();
-            self.set_page_table_token(new_page_table as u64);
+    //     if Arc::strong_count(&self.memory_set.lock()) == 1 {
+    //         self.memory_set.lock().lock().unmap_user_areas();
+    //     } else {
+    //         let memory_set = Arc::new(Mutex::new(MemorySet::clone_or_err(
+    //             &mut self.memory_set.lock().lock(),
+    //         )?));
+    //         *self.memory_set.lock() = memory_set;
+    //         self.memory_set.lock().lock().unmap_user_areas();
+    //         let new_page_table = self.memory_set.lock().lock().page_table_token();
+    //         let tasks = self.tasks.lock();
 
-            // 切换到新的页表上
-            unsafe {
-                write_page_table_root(new_page_table.into());
-            }
-        }
-        // 清空堆，重置堆顶
-        axhal::arch::flush_tlb(None);
+    //         self.set_page_table_token(new_page_table as u64);
 
-        // 关闭 `CLOEXEC` 的文件
-        self.fd_manager.close_on_exec();
-        let current_task = current();
-        // 再考虑手动结束其他所有的 task
-        let mut tasks = self.tasks.lock();
-        for _ in 0..tasks.len() {
-            let task = tasks.pop().unwrap();
-            if task.id() == current_task.id() {
-                // FIXME: This will reset tls forcefully
-                #[cfg(target_arch = "x86_64")]
-                unsafe {
-                    // task.set_tls_force(0);
-                    axhal::arch::write_thread_pointer(0);
-                }
-                tasks.push(task);
-            } else {
-                TID2TASK.lock().remove(&task.id().as_u64());
-                panic!("currently not support exec when has another task ");
-            }
-        }
-        // 当前任务被设置为主线程
+    //         // 切换到新的页表上
+    //         unsafe {
+    //             write_page_table_root(new_page_table.into());
+    //         }
+    //     }
 
-        // 重置统计时间
-        // current_task.reset_time_stat(current_time_nanos() as usize);
-        // current_task.set_name(name.split('/').last().unwrap());
-        assert!(tasks.len() == 1);
-        drop(tasks);
-        let args = if args.is_empty() {
-            vec![name.clone()]
-        } else {
-            args
+    //     // 清空堆，重置堆顶
+    //     axhal::arch::flush_tlb(None);
+
+    //     // 关闭 `CLOEXEC` 的文件
+    //     self.fd_manager.close_on_exec();
+    //     let current_task = current();
+    //     // 再考虑手动结束其他所有的 task
+    //     let mut tasks = self.tasks.lock();
+    //     for _ in 0..tasks.len() {
+    //         let task = tasks.pop().unwrap();
+    //         if task.id() == current_task.id() {
+    //             // FIXME: This will reset tls forcefully
+    //             #[cfg(target_arch = "x86_64")]
+    //             unsafe {
+    //                 // task.set_tls_force(0);
+    //                 axhal::arch::write_thread_pointer(0);
+    //             }
+    //             tasks.push(task);
+    //         } else {
+    //             TID2TASK.lock().remove(&task.id().as_u64());
+    //             panic!("currently not support exec when has another task ");
+    //         }
+    //     }
+    //     // 当前任务被设置为主线程
+
+    //     // 重置统计时间
+    //     // current_task.reset_time_stat(current_time_nanos() as usize);
+    //     // current_task.set_name(name.split('/').last().unwrap());
+
+    //     assert!(tasks.len() == 1);
+    //     drop(tasks);
+    //     let args = if args.is_empty() {
+    //         vec![name.clone()]
+    //     } else {
+    //         args
+    //     };
+    //     let (entry, user_stack_bottom, heap_bottom) = if let Ok(ans) =
+    //         load_app(name.clone(), args, envs, &mut self.memory_set.lock().lock())
+    //     {
+    //         ans
+    //     } else {
+    //         error!("Failed to load app {}", name);
+    //         return Err(AxError::NotFound);
+    //     };
+    //     // 切换了地址空间， 需要切换token
+    //     let page_table_token = if self.pid == KERNEL_PROCESS_ID {
+    //         0
+    //     } else {
+    //         self.memory_set.lock().lock().page_table_token()
+    //     };
+    //     if page_table_token != 0 {
+    //         unsafe {
+    //             write_page_table_root(page_table_token.into());
+    //         };
+    //         // 清空堆，重置堆顶
+    //     }
+    //     // 重置堆
+    //     self.set_heap_bottom(heap_bottom.as_usize() as u64);
+    //     self.set_heap_top(heap_bottom.as_usize() as u64);
+
+    //     // user_stack_top = user_stack_top / PAGE_SIZE_4K * PAGE_SIZE_4K;
+    //     let new_trap_frame = app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
+    //     write_trapframe_to_kstack(
+    //         current_task.kernel_stack_top().unwrap().as_usize(),
+    //         &new_trap_frame,
+    //     );
+
+    //     Ok(())
+    // }
+    
+    /// Fork the current process and create a new child process
+    /// Returns Ok(child_pid) for parent process, and Ok(0) for child process
+    #[allow(unused)]
+    pub fn fork(&self) -> AxResult<u64> {
+        // Clone the current process's memory space
+        let memory_set = {
+            let current_ms = self.memory_set.lock();
+            Arc::new(Mutex::new(MemorySet::clone_or_err(&mut current_ms.lock())?))
         };
-        let (entry, user_stack_bottom, heap_bottom) = if let Ok(ans) =
-            load_app(name.clone(), args, envs, &mut self.memory_set.lock().lock())
-        {
-            ans
-        } else {
-            error!("Failed to load app {}", name);
-            return Err(AxError::NotFound);
-        };
-        // 切换了地址空间， 需要切换token
-        let page_table_token = if self.pid == KERNEL_PROCESS_ID {
-            0
-        } else {
-            self.memory_set.lock().lock().page_table_token()
-        };
-        if page_table_token != 0 {
-            unsafe {
-                write_page_table_root(page_table_token.into());
-            };
-            // 清空用户堆，重置堆顶
-        }
-        // 重置用户堆
-        self.set_heap_bottom(heap_bottom.as_usize() as u64);
-        self.set_heap_top(heap_bottom.as_usize() as u64);
 
-        // user_stack_top = user_stack_top / PAGE_SIZE_4K * PAGE_SIZE_4K;
-        let new_trap_frame = app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
-        write_trapframe_to_kstack(
-            current_task.kernel_stack_top().unwrap().as_usize(),
-            &new_trap_frame,
-        );
+        // Create new process with copied memory space
+        let child_process = Arc::new(Process::new(
+            TaskId::new().as_u64(),  // New PID for child
+            self.pid(),              // Current process becomes parent
+            Mutex::new(memory_set),
+            self.get_heap_bottom(),
+            Arc::clone(&self.fd_manager.cwd),  // Share current working directory
+            Arc::clone(&self.fd_manager.umask), // Share umask
+            self.fd_manager.clone_fd_table(),  // Clone file descriptors
+        ));
 
-        Ok(())
+        // Set the child process's file path
+        child_process.set_file_path(self.file_path.lock().clone());
+
+        // Create a new task for the child process
+        let current = current();
+        let child_task = spawn_task(TaskInner::new(
+            || {},
+            current.name().to_string(),
+            TASK_STACK_SIZE,
+        ));
+
+        // Store task ID mapping
+        TID2TASK.lock().insert(child_task.id().as_u64(), Arc::clone(&child_task));
+
+        // Copy parent's trap frame for child
+        let parent_trap_frame = read_trapframe_from_kstack(current.kernel_stack_top().unwrap().as_usize());
+        let mut child_trap_frame = parent_trap_frame.clone();
+        
+        // Child process returns 0 from for
+        set_ret_code(&mut child_trap_frame, 0);
+        
+        // Write trap frame to child's kernel stack
+        write_trapframe_to_kstack(child_task.kernel_stack_top().unwrap().as_usize(), &child_trap_frame);
+
+        // Add task to child process
+        child_process.tasks.lock().push(Arc::clone(&child_task));
+
+        // Register child process
+        PID2PC.lock().insert(child_process.pid(), Arc::clone(&child_process));
+        
+        // Add child to parent's children list
+        self.children.lock().push(Arc::clone(&child_process));
+
+        // Parent process returns child's pid
+        Ok(child_process.pid())
     }
 
     // /// 实现简易的clone系统调用
@@ -588,7 +679,7 @@ impl Process {
     //     Processor::first_add_task(new_task);
 
     //     Ok(return_id)
-    // }
+    // }    
 }
 
 // /// 与地址空间相关的进程方法
@@ -618,6 +709,7 @@ impl Process {
 /// 与文件相关的进程方法
 impl Process {
     /// 为进程分配一个文件描述符
+    #[allow(unused)]
     pub fn alloc_fd(&self, fd_table: &mut Vec<Option<Arc<dyn FileIO>>>) -> AxResult<usize> {
         for (i, fd) in fd_table.iter().enumerate() {
             if fd.is_none() {
@@ -638,6 +730,7 @@ impl Process {
     }
 
     /// Set the current working directory of the process
+    #[allow(unused)]
     pub fn set_cwd(&self, cwd: String) {
         *self.fd_manager.cwd.lock() = cwd.into();
     }
