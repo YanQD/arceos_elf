@@ -1,6 +1,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "smp")]
 use alloc::sync::Weak;
@@ -14,7 +15,7 @@ use axhal::cpu::this_cpu_id;
 
 use crate::task::{CurrentTask, TaskState};
 use crate::wait_queue::WaitQueueGuard;
-use crate::{AxCpuMask, AxTaskRef, Scheduler, TaskInner, WaitQueue};
+use crate::{AxCpuMask, AxTaskRef, Scheduler, TaskExtMut, TaskInner, WaitQueue};
 
 macro_rules! percpu_static {
     ($(

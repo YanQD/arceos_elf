@@ -128,11 +128,13 @@ dependencies = [
  "axhal",
  "axio",
  "axlog",
+ "axmm",
  "axstd",
  "axsync",
  "axtask",
  "bitflags 2.6.0",
  "cfg-if",
+ "kernel-elf-parser",
  "memory_addr",
  "page_table_multiarch",
  "printf-compat",
@@ -478,7 +480,7 @@ dependencies = [
  "linkme",
  "log",
  "memory_addr",
- "page_table_entry",
+ "page_table_entry 0.5.0",
  "page_table_multiarch",
  "percpu",
  "raw-cpuid 11.1.0",
@@ -529,6 +531,7 @@ dependencies = [
 name = "axmm"
 version = "0.1.0"
 dependencies = [
+ "axalloc",
  "axconfig",
  "axerrno",
  "axhal",
@@ -536,6 +539,7 @@ dependencies = [
  "lazyinit",
  "log",
  "memory_addr",
+ "memory_set",
 ]
 
 [[package]]
@@ -1134,6 +1138,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-elf-parser"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76cc10ff0bb922f6a2dd1d859ecda9a811970ce83eb8c9be19698e7c8ea13628"
+dependencies = [
+ "axerrno",
+ "cfg-if",
+ "log",
+ "memory_addr",
+ "page_table_entry 0.4.1",
+ "xmas-elf",
+]
+
+[[package]]
 name = "kernel_guard"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,6 +1274,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f769efcf10b9dfb4c913bebb409cda77b1a3f072b249bf5465e250bcb30eb49"
 
 [[package]]
+name = "memory_set"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "335675b7ab07460f532d3b2b557313be73037fdf81b65464d8c0d8bd90d2fbf9"
+dependencies = [
+ "memory_addr",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1292,6 +1319,18 @@ checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
 
 [[package]]
 name = "page_table_entry"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6db6393e4382afb7063e4859f39a7db998c4ba9b842a59b05c138c6a6f524fac"
+dependencies = [
+ "aarch64-cpu",
+ "bitflags 2.6.0",
+ "memory_addr",
+ "x86_64 0.15.2",
+]
+
+[[package]]
+name = "page_table_entry"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "069d6f06c815a18754ddf47c44a3b70ece3ce62ac092e078024cfcc0c12185f4"
@@ -1310,7 +1349,7 @@ checksum = "7c738806353b61519d78f1d8813b06360b5c5ee1d3daca9b12597cf1b7cb568b"
 dependencies = [
  "log",
  "memory_addr",
- "page_table_entry",
+ "page_table_entry 0.5.0",
  "riscv 0.11.1",
  "x86",
 ]

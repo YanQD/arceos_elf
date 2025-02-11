@@ -1,5 +1,6 @@
 pub mod elf;
 pub mod load;
+pub mod auxv;
 
 use core::fmt;
 use axlog::debug;

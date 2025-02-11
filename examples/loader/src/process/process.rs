@@ -7,31 +7,32 @@ use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{collections::BTreeMap, string::String};
 use axerrno::{AxError, AxResult};
-use axhal::arch::write_page_table_root;
 
-use axlog::{debug, error};
+use axhal::arch::write_page_table_root;
+use axlog::info;
+use axlog::debug;
+use axmm::new_kernel_aspace;
+use axmm::AddrSpace;
+use axstd::println;
 use axsync::Mutex;
-use axtask::current;
 use axtask::spawn_task;
 use axtask::AxTaskRef;
-use axtask::TaskExtMut;
 use axtask::TaskId;
 use axtask::TaskInner;
+use memory_addr::PhysAddr;
+use crate::abi::abi_entry;
 use crate::config::KERNEL_PROCESS_ID;
 use crate::config::TASK_STACK_SIZE;
 use crate::fs::FileIO;
 use crate::fs::OpenFlags;
-use crate::mem::MemorySet;
+use crate::process::load_user_app;
+use crate::process::task_ext::TaskExt;
+use crate::process::yield_now_task;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use crate::process::fd_manager::{FdManager, FdTable};
 
 use crate::process::stdio::{Stderr, Stdin, Stdout};
-use crate::process::load_app;
-
-use super::read_trapframe_from_kstack;
-use super::set_ret_code;
-use super::write_trapframe_to_kstack;
 
 /// Map from task id to arc pointer of task
 pub static TID2TASK: Mutex<BTreeMap<u64, AxTaskRef>> = Mutex::new(BTreeMap::new());
@@ -59,7 +60,7 @@ pub struct Process {
     /// 退出状态码
     pub exit_code: AtomicI32,
     /// 地址空间
-    pub memory_set: Mutex<Arc<Mutex<MemorySet>>>,
+    pub memory_set: Mutex<Arc<Mutex<AddrSpace>>>,
     /// 堆空间管理
     pub heap_bottom: AtomicU64,
     pub heap_top: AtomicU64,
@@ -177,7 +178,7 @@ impl Process {
     pub fn new(
         pid: u64,
         parent: u64,
-        memory_set: Mutex<Arc<Mutex<MemorySet>>>,
+        memory_set: Mutex<Arc<Mutex<AddrSpace>>>,
         heap_bottom: u64,
         cwd: Arc<Mutex<String>>,
         mask: Arc<AtomicI32>,
@@ -185,7 +186,7 @@ impl Process {
     ) -> Self {
         let page_table_token = { 
             let ms = memory_set.lock();
-            let token = ms.as_ref().lock().page_table_token();
+            let token = ms.as_ref().lock().page_table_root().as_usize();
             AtomicU64::new(token as u64)
         };
 
@@ -206,41 +207,23 @@ impl Process {
         }
     }
 
-    /// 根据给定参数创建一个新的进程，作为初始进程
+    /// 根据给定参数创建一个新的进程
     #[allow(unused)]
-    pub fn init(mut path: String) -> AxResult<AxTaskRef> {
-        let mut memory_set = MemorySet::new_memory_set();
+    pub fn init(mut path: String, elf_file: &'static [u8]) -> AxResult<usize> {
+        let mut memory_set = new_kernel_aspace().unwrap();
 
-        let page_table_token = memory_set.page_table_token();
-        if page_table_token != 0 {
-            unsafe {
-                write_page_table_root(page_table_token.into());
-            };
-        }
+        let page_table_token = memory_set.page_table_root();
 
-        let (entry, heap_bottom) = 
-            if let Ok(ans) = load_app(&mut memory_set) {
-                ans
-            } else {
-                error!("Failed to load app {}", path);
-                return Err(AxError::NotFound);
-            };
-
+        info!("page_table_token: 0x{:x}", page_table_token);
+        
+        let (entry, heap_bottom) = load_user_app(&mut memory_set, "fork", elf_file).unwrap();
+    
         let new_fd_table: FdTable = Arc::new(Mutex::new(vec![
-            // 标准输入
-            Some(Arc::new(Stdin {
-                flags: Mutex::new(OpenFlags::empty()),
-            })),
-            // 标准输出
-            Some(Arc::new(Stdout {
-                flags: Mutex::new(OpenFlags::empty()),
-            })),
-            // 标准错误
-            Some(Arc::new(Stderr {
-                flags: Mutex::new(OpenFlags::empty()),
-            })),
+            Some(Arc::new(Stdin { flags: Mutex::new(OpenFlags::empty()) })),
+            Some(Arc::new(Stdout { flags: Mutex::new(OpenFlags::empty()) })),
+            Some(Arc::new(Stderr { flags: Mutex::new(OpenFlags::empty()) })),
         ]));
-
+    
         let new_process = Arc::new(Self::new(
             TaskId::new().as_u64(),
             KERNEL_PROCESS_ID,
@@ -250,461 +233,61 @@ impl Process {
             Arc::new(AtomicI32::new(0o022)),
             new_fd_table,
         ));
-
+    
         if !path.starts_with('/') {
-            // 如果 path 不是绝对路径, 则加上当前工作目录
             let cwd = new_process.get_cwd();
             assert!(cwd.ends_with('/'));
-            path = format!("{}{}", cwd, path);
+            path = format!("{} {}", cwd, path); // 修复路径拼接
         }
-
+    
         new_process.set_file_path(path.clone());
+        
+        let task_ext = TaskExt::init(new_process.pid(), true);
 
         let mut task_inner = TaskInner::new(
-            || {},
+            move || {
+                // 设置用户程序入口点
+                unsafe { user_entry(entry.as_usize(), page_table_token); }
+            },
             path.to_string(),
             TASK_STACK_SIZE,
         );
 
-        task_inner.task_ext_mut().set_leader(true);
-        task_inner.task_ext_mut().set_process_id(new_process.pid());
+        task_inner.init_task_ext(task_ext);
 
-        let new_task = spawn_task(TaskInner::new(
-            || {},
-            path.to_string(),
-            TASK_STACK_SIZE,
-        ));
+        let new_task = spawn_task(task_inner);
 
-        TID2TASK
-            .lock()
-            .insert(new_task.id().as_u64(), Arc::clone(&new_task));
+        yield_now_task();
 
-        // // 准备参数等数据并放入内核栈
-        // let stack_top = new_task.kernel_stack_top().unwrap();
-
-        // let new_trap_frame = app_init_context(entry.as_usize(), stack_top.as_usize());
-
-        // write_trapframe_to_kstack(new_task.kernel_stack_top().unwrap().as_usize(), &new_trap_frame);
-
+        TID2TASK.lock().insert(new_task.id().as_u64(), Arc::clone(&new_task));
         new_process.tasks.lock().push(Arc::clone(&new_task));
+        PID2PC.lock().insert(new_process.pid(), Arc::clone(&new_process));
 
-        PID2PC
-            .lock()
-            .insert(new_process.pid(), Arc::clone(&new_process));
+        Ok(page_table_token.as_usize())
+    }
+
+    pub fn fork() {
         
-        match PID2PC.lock().get(&KERNEL_PROCESS_ID) {
-            Some(kernel_process) => {
-                kernel_process.children.lock().push(new_process);
-            }
-            None => {
-                return Err(AxError::NotFound);
-            }
-        }
-        
-        Ok(new_task)
     }
 }
 
-impl Process {
-    // /// 将当前进程替换为指定的程序
-    // /// args为传入的参数
-    // /// 任务的统计时间会被重置
-    // #[allow(unused)]
-    // pub fn exec(&self, name: String, args: Vec<String>, envs: &Vec<String>) -> AxResult<()> {
-    //     // 首先要处理原先进程的资源
-    //     // 处理分配的页帧
-    //     // 之后加入额外的东西之后再处理其他的包括信号等因素
-    //     // 不是直接删除原有地址空间，否则构建成本较高。
-
-    //     if Arc::strong_count(&self.memory_set.lock()) == 1 {
-    //         self.memory_set.lock().lock().unmap_user_areas();
-    //     } else {
-    //         let memory_set = Arc::new(Mutex::new(MemorySet::clone_or_err(
-    //             &mut self.memory_set.lock().lock(),
-    //         )?));
-    //         *self.memory_set.lock() = memory_set;
-    //         self.memory_set.lock().lock().unmap_user_areas();
-    //         let new_page_table = self.memory_set.lock().lock().page_table_token();
-    //         let tasks = self.tasks.lock();
-
-    //         self.set_page_table_token(new_page_table as u64);
-
-    //         // 切换到新的页表上
-    //         unsafe {
-    //             write_page_table_root(new_page_table.into());
-    //         }
-    //     }
-
-    //     // 清空堆，重置堆顶
-    //     axhal::arch::flush_tlb(None);
-
-    //     // 关闭 `CLOEXEC` 的文件
-    //     self.fd_manager.close_on_exec();
-    //     let current_task = current();
-    //     // 再考虑手动结束其他所有的 task
-    //     let mut tasks = self.tasks.lock();
-    //     for _ in 0..tasks.len() {
-    //         let task = tasks.pop().unwrap();
-    //         if task.id() == current_task.id() {
-    //             // FIXME: This will reset tls forcefully
-    //             #[cfg(target_arch = "x86_64")]
-    //             unsafe {
-    //                 // task.set_tls_force(0);
-    //                 axhal::arch::write_thread_pointer(0);
-    //             }
-    //             tasks.push(task);
-    //         } else {
-    //             TID2TASK.lock().remove(&task.id().as_u64());
-    //             panic!("currently not support exec when has another task ");
-    //         }
-    //     }
-    //     // 当前任务被设置为主线程
-
-    //     // 重置统计时间
-    //     // current_task.reset_time_stat(current_time_nanos() as usize);
-    //     // current_task.set_name(name.split('/').last().unwrap());
-
-    //     assert!(tasks.len() == 1);
-    //     drop(tasks);
-    //     let args = if args.is_empty() {
-    //         vec![name.clone()]
-    //     } else {
-    //         args
-    //     };
-    //     let (entry, user_stack_bottom, heap_bottom) = if let Ok(ans) =
-    //         load_app(name.clone(), args, envs, &mut self.memory_set.lock().lock())
-    //     {
-    //         ans
-    //     } else {
-    //         error!("Failed to load app {}", name);
-    //         return Err(AxError::NotFound);
-    //     };
-    //     // 切换了地址空间， 需要切换token
-    //     let page_table_token = if self.pid == KERNEL_PROCESS_ID {
-    //         0
-    //     } else {
-    //         self.memory_set.lock().lock().page_table_token()
-    //     };
-    //     if page_table_token != 0 {
-    //         unsafe {
-    //             write_page_table_root(page_table_token.into());
-    //         };
-    //         // 清空堆，重置堆顶
-    //     }
-    //     // 重置堆
-    //     self.set_heap_bottom(heap_bottom.as_usize() as u64);
-    //     self.set_heap_top(heap_bottom.as_usize() as u64);
-
-    //     // user_stack_top = user_stack_top / PAGE_SIZE_4K * PAGE_SIZE_4K;
-    //     let new_trap_frame = app_init_context(entry.as_usize(), user_stack_bottom.as_usize());
-    //     write_trapframe_to_kstack(
-    //         current_task.kernel_stack_top().unwrap().as_usize(),
-    //         &new_trap_frame,
-    //     );
-
-    //     Ok(())
-    // }
-    
-    /// Fork the current process and create a new child process
-    /// Returns Ok(child_pid) for parent process, and Ok(0) for child process
-    #[allow(unused)]
-    pub fn fork(&self) -> AxResult<u64> {
-        // Clone the current process's memory space
-        let memory_set = {
-            let current_ms = self.memory_set.lock();
-            Arc::new(Mutex::new(MemorySet::clone_or_err(&mut current_ms.lock())?))
-        };
-
-        // Create new process with copied memory space
-        let child_process = Arc::new(Process::new(
-            TaskId::new().as_u64(),  // New PID for child
-            self.pid(),              // Current process becomes parent
-            Mutex::new(memory_set),
-            self.get_heap_bottom(),
-            Arc::clone(&self.fd_manager.cwd),  // Share current working directory
-            Arc::clone(&self.fd_manager.umask), // Share umask
-            self.fd_manager.clone_fd_table(),  // Clone file descriptors
-        ));
-
-        // Set the child process's file path
-        child_process.set_file_path(self.file_path.lock().clone());
-
-        // Create a new task for the child process
-        let current = current();
-        let child_task = spawn_task(TaskInner::new(
-            || {},
-            current.name().to_string(),
-            TASK_STACK_SIZE,
-        ));
-
-        // Store task ID mapping
-        TID2TASK.lock().insert(child_task.id().as_u64(), Arc::clone(&child_task));
-
-        // Copy parent's trap frame for child
-        let parent_trap_frame = read_trapframe_from_kstack(current.kernel_stack_top().unwrap().as_usize());
-        let mut child_trap_frame = parent_trap_frame.clone();
-        
-        // Child process returns 0 from for
-        set_ret_code(&mut child_trap_frame, 0);
-        
-        // Write trap frame to child's kernel stack
-        write_trapframe_to_kstack(child_task.kernel_stack_top().unwrap().as_usize(), &child_trap_frame);
-
-        // Add task to child process
-        child_process.tasks.lock().push(Arc::clone(&child_task));
-
-        // Register child process
-        PID2PC.lock().insert(child_process.pid(), Arc::clone(&child_process));
-        
-        // Add child to parent's children list
-        self.children.lock().push(Arc::clone(&child_process));
-
-        // Parent process returns child's pid
-        Ok(child_process.pid())
+pub unsafe extern "C" fn user_entry(entry: usize, page_table_token: PhysAddr) -> ! {
+    unsafe { 
+        write_page_table_root(page_table_token);
     }
+    info!("entry: 0x{:x}", entry);
+    println!("Jump to user space ...");
 
-    // /// 实现简易的clone系统调用
-    // /// 返回值为新产生的任务的id
-    // pub fn clone_task(
-    //     &self,
-    //     flags: usize,
-    //     stack: Option<usize>,
-    //     ptid: usize,
-    //     tls: usize,
-    //     ctid: usize,
-    // ) -> AxResult<u64> {
-    //     let clone_flags = CloneFlags::from_bits((flags & !0x3f) as u32).unwrap();
-    //     // 是否共享虚拟地址空间
-    //     let new_memory_set = if clone_flags.contains(CloneFlags::CLONE_VM) {
-    //         Mutex::new(Arc::clone(&self.memory_set.lock()))
-    //     } else {
-    //         let memory_set = Arc::new(Mutex::new(MemorySet::clone_or_err(
-    //             &mut self.memory_set.lock().lock(),
-    //         )?));
-
-    //         Mutex::new(memory_set)
-    //     };
-
-    //     // 在生成新的进程前，需要决定其所属进程是谁
-    //     let process_id = if clone_flags.contains(CloneFlags::CLONE_THREAD) {
-    //         // 当前clone生成的是线程，那么以self作为进程
-    //         self.pid
-    //     } else {
-    //         // 新建一个进程，并且设计进程之间的父子关系
-    //         TaskId::new().as_u64()
-    //     };
-    //     // 决定父进程是谁
-    //     let parent_id = if clone_flags.contains(CloneFlags::CLONE_PARENT) {
-    //         // 创建兄弟关系，此时以self的父进程作为自己的父进程
-    //         // 理论上不应该创建内核进程的兄弟进程，所以可以直接unwrap
-    //         self.get_parent()
-    //     } else {
-    //         // 创建父子关系，此时以self作为父进程
-    //         self.pid
-    //     };
-    //     let new_task = new_task(
-    //         || {},
-    //         String::from(self.tasks.lock()[0].name().split('/').last().unwrap()),
-    //         self.get_stack_limit() as usize,
-    //         process_id,
-    //         new_memory_set.lock().lock().page_table_token(),
-    //     );
-
-    //     // When clone a new task, the new task should have the same fs_base as the original task.
-    //     //
-    //     // It should be saved in trap frame, but to compatible with Unikernel, we save it in TaskContext.
-    //     #[cfg(target_arch = "x86_64")]
-    //     unsafe {
-    //         new_task.set_tls_force(axhal::arch::read_thread_pointer());
-    //     }
-
-    //     debug!("new task:{}", new_task.id().as_u64());
-    //     TID2TASK
-    //         .lock()
-    //         .insert(new_task.id().as_u64(), Arc::clone(&new_task));
-
-    //     // 检查是否在父任务中写入当前新任务的 tid
-    //     if clone_flags.contains(CloneFlags::CLONE_PARENT_SETTID)
-    //         & self.manual_alloc_for_lazy(ptid.into()).is_ok()
-    //     {
-    //         unsafe {
-    //             *(ptid as *mut i32) = new_task.id().as_u64() as i32;
-    //         }
-    //     }
-    //     // 若包含CLONE_CHILD_SETTID或者CLONE_CHILD_CLEARTID
-    //     // 则需要把线程号写入到子线程地址空间中tid对应的地址中
-    //     if clone_flags.contains(CloneFlags::CLONE_CHILD_SETTID)
-    //         || clone_flags.contains(CloneFlags::CLONE_CHILD_CLEARTID)
-    //     {
-    //         if clone_flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-    //             new_task.set_child_tid(ctid);
-    //         }
-
-    //         if clone_flags.contains(CloneFlags::CLONE_CHILD_CLEARTID) {
-    //             new_task.set_clear_child_tid(ctid);
-    //         }
-
-    //         if clone_flags.contains(CloneFlags::CLONE_VM) {
-    //             // 此时地址空间不会发生改变
-    //             // 在当前地址空间下进行分配
-    //             if self.manual_alloc_for_lazy(ctid.into()).is_ok() {
-    //                 // 正常分配了地址
-    //                 unsafe {
-    //                     *(ctid as *mut i32) =
-    //                         if clone_flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-    //                             new_task.id().as_u64() as i32
-    //                         } else {
-    //                             0
-    //                         }
-    //                 }
-    //             } else {
-    //                 return Err(AxError::BadAddress);
-    //             }
-    //         } else {
-    //             // 否则需要在新的地址空间中进行分配
-    //             let memory_set_wrapper = new_memory_set.lock();
-    //             let mut vm = memory_set_wrapper.lock();
-    //             if vm.manual_alloc_for_lazy(ctid.into()).is_ok() {
-    //                 // 此时token没有发生改变，所以不能直接解引用访问，需要手动查页表
-    //                 if let Ok((phyaddr, _, _)) = vm.query(ctid.into()) {
-    //                     let vaddr: usize = phys_to_virt(phyaddr).into();
-    //                     // 注意：任何地址都是从free memory分配来的，那么在页表中，free memory一直在页表中，他们的虚拟地址和物理地址一直有偏移的映射关系
-    //                     unsafe {
-    //                         *(vaddr as *mut i32) =
-    //                             if clone_flags.contains(CloneFlags::CLONE_CHILD_SETTID) {
-    //                                 new_task.id().as_u64() as i32
-    //                             } else {
-    //                                 0
-    //                             }
-    //                     }
-    //                     drop(vm);
-    //                 } else {
-    //                     drop(vm);
-    //                     return Err(AxError::BadAddress);
-    //                 }
-    //             } else {
-    //                 drop(vm);
-    //                 return Err(AxError::BadAddress);
-    //             }
-    //         }
-    //     }
-    //     // 返回的值
-    //     // 若创建的是进程，则返回进程的id
-    //     // 若创建的是线程，则返回线程的id
-    //     let return_id: u64;
-    //     // 决定是创建线程还是进程
-    //     if clone_flags.contains(CloneFlags::CLONE_THREAD) {
-    //         // // 若创建的是线程，那么不用新建进程
-    //         // info!("task len: {}", inner.tasks.len());
-    //         // info!("task address :{:X}", (&new_task as *const _ as usize));
-    //         // info!(
-    //         //     "task address: {:X}",
-    //         //     (&Arc::clone(&new_task)) as *const _ as usize
-    //         // );
-    //         self.tasks.lock().push(Arc::clone(&new_task));
-
-    //         return_id = new_task.id().as_u64();
-    //     } else {
-    //         let mut cwd_src = Arc::new(Mutex::new(String::from("/").into()));
-    //         let mut mask_src = Arc::new(AtomicI32::new(0o022));
-    //         if clone_flags.contains(CloneFlags::CLONE_FS) {
-    //             cwd_src = Arc::clone(&self.fd_manager.cwd);
-    //             mask_src = Arc::clone(&self.fd_manager.umask);
-    //         }
-    //         // 若创建的是进程，那么需要新建进程
-    //         // 由于地址空间是复制的，所以堆底的地址也一定相同
-    //         let fd_table = if clone_flags.contains(CloneFlags::CLONE_FILES) {
-    //             Arc::clone(&self.fd_manager.fd_table)
-    //         } else {
-    //             Arc::new(Mutex::new(self.fd_manager.fd_table.lock().clone()))
-    //         };
-    //         let new_process = Arc::new(Process::new(
-    //             process_id,
-    //             self.get_stack_limit(),
-    //             parent_id,
-    //             new_memory_set,
-    //             self.get_heap_bottom(),
-    //             cwd_src,
-    //             mask_src,
-    //             fd_table,
-    //         ));
-    //         // 复制当前工作文件夹
-    //         new_process.set_cwd(self.get_cwd());
-    //         // 记录该进程，防止被回收
-    //         PID2PC.lock().insert(process_id, Arc::clone(&new_process));
-    //         new_process.tasks.lock().push(Arc::clone(&new_task));
-
-    //         return_id = new_process.pid;
-    //         PID2PC
-    //             .lock()
-    //             .get_mut(&parent_id)
-    //             .unwrap()
-    //             .children
-    //             .lock()
-    //             .push(Arc::clone(&new_process));
-    //     };
-
-    //     if !clone_flags.contains(CloneFlags::CLONE_THREAD) {
-    //         new_task.set_leader(true);
-    //     }
-    //     let current_task = current();
-    //     // 复制原有的trap上下文
-    //     // let mut trap_frame = unsafe { *(current_task.get_first_trap_frame()) };
-    //     let mut trap_frame =
-    //         read_trapframe_from_kstack(current_task.get_kernel_stack_top().unwrap());
-    //     // drop(current_task);
-    //     // 新开的进程/线程返回值为 0
-    //     trap_frame.set_ret_code(0);
-    //     if clone_flags.contains(CloneFlags::CLONE_SETTLS) {
-    //         #[cfg(not(target_arch = "x86_64"))]
-    //         trap_frame.set_tls(tls);
-    //         #[cfg(target_arch = "x86_64")]
-    //         unsafe {
-    //             new_task.set_tls_force(tls);
-    //         }
-    //     }
-
-    //     // 设置用户栈
-    //     // 若给定了用户栈，则使用给定的用户栈
-    //     // 若没有给定用户栈，则使用当前用户栈
-    //     // 没有给定用户栈的时候，只能是共享了地址空间，且原先调用clone的有用户栈，此时已经在之前的trap clone时复制了
-    //     if let Some(stack) = stack {
-    //         trap_frame.set_user_sp(stack);
-    //         // info!(
-    //         //     "New user stack: sepc:{:X}, stack:{:X}",
-    //         //     trap_frame.sepc, trap_frame.regs.sp
-    //         // );
-    //     }
-    //     write_trapframe_to_kstack(new_task.get_kernel_stack_top().unwrap(), &trap_frame);
-    //     Processor::first_add_task(new_task);
-
-    //     Ok(return_id)
-    // }    
+    unsafe { core::arch::asm!("
+        la      a2, {abi_entry}
+        mv      t2, {run_start}
+        jalr    t2",
+        abi_entry = sym abi_entry,
+        run_start = in(reg) entry,
+        clobber_abi("C"),
+        options(noreturn),
+    )}
 }
-
-// /// 与地址空间相关的进程方法
-// impl Process {
-//     /// alloc physical memory for lazy allocation manually
-//     pub fn manual_alloc_for_lazy(&self, addr: VirtAddr) -> AxResult<()> {
-//         self.memory_set.lock().lock().manual_alloc_for_lazy(addr)
-//     }
-
-//     /// alloc range physical memory for lazy allocation manually
-//     pub fn manual_alloc_range_for_lazy(&self, start: VirtAddr, end: VirtAddr) -> AxResult<()> {
-//         self.memory_set
-//             .lock()
-//             .lock()
-//             .manual_alloc_range_for_lazy(start, end)
-//     }
-
-//     /// alloc physical memory with the given type size for lazy allocation manually
-//     pub fn manual_alloc_type_for_lazy<T: Sized>(&self, obj: *const T) -> AxResult<()> {
-//         self.memory_set
-//             .lock()
-//             .lock()
-//             .manual_alloc_type_for_lazy(obj)
-//     }
-// }
 
 /// 与文件相关的进程方法
 impl Process {

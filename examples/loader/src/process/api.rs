@@ -1,39 +1,15 @@
-use core::ptr::copy_nonoverlapping;
-use core::slice::from_raw_parts;
 extern crate alloc;
-use alloc::sync::Arc;
-use axerrno::{AxError, AxResult};
-use axhal::mem::VirtAddr;
-use axhal::paging::MappingFlags;
-use axlog::{debug, info, warn};
+use alloc::{string::ToString, sync::Arc};
+use axerrno::AxResult;
+use axhal::{mem::VirtAddr, paging::MappingFlags};
+use axlog::debug;
+use axmm::AddrSpace;
 use axtask::{current, AxTaskRef, CurrentTask, TaskExtRef};
-use crate::config::{HEAP_BASE, MAX_HEAP_SIZE};
-use crate::elf::elf::{get_elf_entry, get_elf_segments, get_relocate_pairs};
-use crate::elf::load::{EXEC_ZONE_START, PLASH_START};
-use crate::mem::MemorySet;
+use xmas_elf::ElfFile;
+use crate::elf::{elf::load_elf, load::modify_rela_plt};
+use crate::elf::load::{modify_rela_dyn, EXEC_ZONE_START};
 
 use super::{Process, PID2PC, TID2TASK};
-
-// /// 初始化内核调度进程
-// pub fn init_kernel_process() {
-//     let kernel_process = Arc::new(Process::new(
-//         TaskId::new().as_u64(),
-//         TASK_STACK_SIZE as u64,
-//         0,
-//         Mutex::new(Arc::new(Mutex::new(MemorySet::new_empty()))),
-//         0,
-//         Arc::new(Mutex::new(String::from("/").into())),
-//         Arc::new(AtomicI32::new(0o022)),
-//         Arc::new(Mutex::new(vec![])),
-//     ));
-
-//     axtask::init_scheduler();
-//     kernel_process
-//         .tasks
-//         .lock()
-//         .push(Arc::clone(current_processor().idle_task()));
-//     PID2PC.lock().insert(kernel_process.pid(), kernel_process);
-// }
 
 /// return the `Arc<Process>` of the current process
 #[allow(unused)]
@@ -107,55 +83,70 @@ pub fn current_process() -> Arc<Process> {
 //     axtask::exit(exit_code);
 // }
 
-/// 返回 ELF 程序入口，堆底
-pub fn load_app(
-    memory_set: &mut MemorySet,
+/// Load a user app.
+///
+/// # Returns
+/// - The first return value is the entry point of the user app.
+/// - The second return value is the top of the user stack.
+/// - The third return value is the address space of the user app.
+pub fn load_user_app(
+    memory_set: &mut AddrSpace,
+    app_name: &str,
+    elf_file: &'static [u8]
 ) -> AxResult<(VirtAddr, VirtAddr)> {
-    debug!("Load payload ...");
-    let elf_size = unsafe { *(PLASH_START as *const usize) };
-    debug!("ELF size: 0x{:x}", elf_size);
-    let elf_data = unsafe { from_raw_parts((PLASH_START + 0x8) as *const u8, elf_size) };
 
-    let elf = xmas_elf::ElfFile::new(&elf_data).expect("Error parsing app ELF file.");
-    let elf_base_addr = Some(EXEC_ZONE_START as usize);
-    warn!("The elf base addr may be different in different arch!");
-    let entry = get_elf_entry(&elf, elf_base_addr);
-    let segments = get_elf_segments(&elf, elf_base_addr);
-    let relocate_pairs = get_relocate_pairs(&elf, elf_base_addr);
-    
-    for segment in segments {
-        memory_set.new_region(
-            VirtAddr::from(segment.vaddr.as_usize()),
-            segment.size,
-            segment.flags,
-            segment.data.as_deref(),
+    let elf_info = load_elf(VirtAddr::from(EXEC_ZONE_START), elf_file);
+    for segement in elf_info.segments {
+        debug!(
+            "Mapping ELF segment: [{:#x?}, {:#x?}) flags: {:#x?}",
+            segement.start_vaddr,
+            segement.start_vaddr + segement.size,
+            segement.flags
         );
+        memory_set.map_alloc(segement.start_vaddr, segement.size, segement.flags, true)?;
+
+        if segement.data.is_empty() {
+            continue;
+        }
+
+        memory_set.write(segement.start_vaddr + segement.offset, &segement.data)?;
     }
 
-    for relocate_pair in relocate_pairs {
-        let src: usize = relocate_pair.src.into();
-        let dst: usize = relocate_pair.dst.into();
-        let count = relocate_pair.count;
-        unsafe { copy_nonoverlapping(src.to_ne_bytes().as_ptr(), dst as *mut u8, count) }
-    }
+    // The user stack is divided into two parts:
+    // `ustack_start` -> `ustack_pointer`: It is the stack space that users actually read and write.
+    // `ustack_pointer` -> `ustack_end`: It is the space that contains the arguments, environment variables and auxv passed to the app.
+    //  When the app starts running, the stack pointer points to `ustack_pointer`.
+    let ustack_end = VirtAddr::from_usize(0xffff_ffc0_8020_0000);
+    let ustack_size = 0x40000;
+    let ustack_start = ustack_end - ustack_size;
+    debug!(
+        "Mapping user stack: {:#x?} -> {:#x?}",
+        ustack_start, ustack_end
+    );
 
-    // Now map the stack and the heap
-    let heap_start = VirtAddr::from(HEAP_BASE);
-    let heap_data = [0_u8].repeat(MAX_HEAP_SIZE);
-    memory_set.new_region(
-        heap_start,
-        MAX_HEAP_SIZE,
+    // user-heap-base = "0x3FA0_0000"
+    // # The base address of the user stack. And the stack bottom is `user-stack-top + max-user-stack-size`.
+    // user-stack-top = "0x3FE0_0000"
+    // # The size of the user heap.
+    // max-user-heap-size = "0x40_0000"
+
+    // FIXME: Add more arguments and environment variables
+    let (stack_data, ustack_pointer) = kernel_elf_parser::get_app_stack_region(
+        &[app_name.to_string()],
+        &[],
+        &elf_info.auxv,
+        ustack_start,
+        ustack_size,
+    );
+    memory_set.map_alloc(
+        ustack_start,
+        ustack_size,
         MappingFlags::READ | MappingFlags::WRITE,
-        Some(&heap_data),
-    );
+        true,
+    )?;
 
-    info!(
-        "[new region] user heap: [{:?}, {:?})",
-        heap_start,
-        heap_start + MAX_HEAP_SIZE
-    );
-
-    Ok((entry, heap_start))
+    memory_set.write(VirtAddr::from_usize(ustack_pointer), stack_data.as_slice())?;
+    Ok((elf_info.entry, VirtAddr::from(ustack_pointer)))
 }
 
 // /// To deal with the page fault

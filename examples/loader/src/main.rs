@@ -5,34 +5,29 @@
 
 extern crate alloc;
 
-use abi::abi_entry;
-use axlog::info;
-
 mod abi;
 mod config;
 mod elf;
-mod mem;
 mod fs;
 mod process;
 
-use elf::load::load_elf;
-use mem::MemorySet;
-use process::load_app;
+use core::slice::from_raw_parts;
+
+use alloc::string::ToString;
+use axstd::println;
+use elf::load::PLASH_START;
+use process::Process;
 
 #[unsafe(no_mangle)]
 fn main() {
-    let entry = load_elf();
+    println!("Load payload ...");
+    let elf_size = unsafe { *(PLASH_START as *const usize) };
+    
+    println!("ELF size: 0x{:x}", elf_size);
+    let elf_slice = unsafe { from_raw_parts((PLASH_START + 0x8) as *const u8, elf_size) };
 
-    let mut memory_set = MemorySet::new_memory_set();
-    let _ = load_app(&mut memory_set);
+    Process::init("fork".to_string(), &elf_slice).unwrap();
 
-    info!("Execute app ...");
-    unsafe { core::arch::asm!("
-        la      a2, {abi_entry}
-        mv      t2, {run_start}
-        jalr    t2",
-        abi_entry = sym abi_entry,
-        run_start = in(reg) entry,
-        clobber_abi("C"),
-    )}
+    println!("Process init done!");
+
 }

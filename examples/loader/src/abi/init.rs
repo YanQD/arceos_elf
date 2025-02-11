@@ -31,8 +31,6 @@ pub extern "C" fn abi_libc_start_main(
 
 	init_scheduler();
 
-    // Process::init();
-
     let main = unsafe {
 		mem::transmute::<usize, MainFn>( main as usize)
 	};
@@ -52,6 +50,7 @@ pub extern "C" fn abi_init() {
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_fini() {
 	info!("[ABI:Init]: abi_fini");
+    exit(0)
 }
 
 #[unsafe(no_mangle)]
