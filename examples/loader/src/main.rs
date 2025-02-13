@@ -11,12 +11,9 @@ mod elf;
 mod fs;
 mod process;
 
-use core::slice::from_raw_parts;
-
-use alloc::string::ToString;
+use abi::abi_entry;
 use axstd::println;
-use elf::load::PLASH_START;
-use process::Process;
+use elf::{load::load_elf, PLASH_START};
 
 #[unsafe(no_mangle)]
 fn main() {
@@ -24,10 +21,20 @@ fn main() {
     let elf_size = unsafe { *(PLASH_START as *const usize) };
     
     println!("ELF size: 0x{:x}", elf_size);
-    let elf_slice = unsafe { from_raw_parts((PLASH_START + 0x8) as *const u8, elf_size) };
 
-    Process::init("fork".to_string(), &elf_slice).unwrap();
+    let entry = load_elf();
+
+    unsafe { 
+        core::arch::asm!("
+            la      a2, {abi_entry}
+            mv      t2, {run_start}
+
+            jalr    ra, t2, 0",
+            abi_entry = sym abi_entry,
+            run_start = in(reg) entry,
+            clobber_abi("C"),
+        )
+    }
 
     println!("Process init done!");
-
 }

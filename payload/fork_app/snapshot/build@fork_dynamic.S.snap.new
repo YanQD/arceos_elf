@@ -108,7 +108,7 @@ Disassembly of section .text:
  698:	9b47b783          	ld	a5,-1612(a5) # 2048 <__deregister_frame_info>
  69c:	c791                	beqz	a5,6a8 <__do_global_dtors_aux+0x40>
  69e:	00000517          	auipc	a0,0x0
- 6a2:	0da50513          	addi	a0,a0,218 # 778 <__FRAME_END__>
+ 6a2:	11250513          	addi	a0,a0,274 # 7b0 <__FRAME_END__>
  6a6:	9782                	jalr	a5
  6a8:	4785                	li	a5,1
  6aa:	00f40023          	sb	a5,0(s0)
@@ -126,7 +126,7 @@ Disassembly of section .text:
  6c4:	00002597          	auipc	a1,0x2
  6c8:	9bc58593          	addi	a1,a1,-1604 # 2080 <object.0>
  6cc:	00000517          	auipc	a0,0x0
- 6d0:	0ac50513          	addi	a0,a0,172 # 778 <__FRAME_END__>
+ 6d0:	0e450513          	addi	a0,a0,228 # 7b0 <__FRAME_END__>
  6d4:	9782                	jalr	a5
  6d6:	60a2                	ld	ra,8(sp)
  6d8:	0141                	addi	sp,sp,16
@@ -138,30 +138,36 @@ Disassembly of section .text:
  6e0:	ec06                	sd	ra,24(sp)
  6e2:	e822                	sd	s0,16(sp)
  6e4:	1000                	addi	s0,sp,32
- 6e6:	edbff0ef          	jal	ra,5c0 <fork@plt>
- 6ea:	87aa                	mv	a5,a0
- 6ec:	fef42623          	sw	a5,-20(s0)
- 6f0:	fec42783          	lw	a5,-20(s0)
- 6f4:	2781                	sext.w	a5,a5
- 6f6:	0007da63          	bgez	a5,70a <main+0x2c>
- 6fa:	00000517          	auipc	a0,0x0
- 6fe:	03e50513          	addi	a0,a0,62 # 738 <main+0x5a>
- 702:	eafff0ef          	jal	ra,5b0 <puts@plt>
- 706:	4785                	li	a5,1
- 708:	a01d                	j	72e <main+0x50>
- 70a:	fec42783          	lw	a5,-20(s0)
- 70e:	2781                	sext.w	a5,a5
- 710:	eb81                	bnez	a5,720 <main+0x42>
+ 6e6:	00000517          	auipc	a0,0x0
+ 6ea:	06a50513          	addi	a0,a0,106 # 750 <main+0x72>
+ 6ee:	ec3ff0ef          	jal	ra,5b0 <puts@plt>
+ 6f2:	ecfff0ef          	jal	ra,5c0 <fork@plt>
+ 6f6:	87aa                	mv	a5,a0
+ 6f8:	fef42623          	sw	a5,-20(s0)
+ 6fc:	00000517          	auipc	a0,0x0
+ 700:	06450513          	addi	a0,a0,100 # 760 <main+0x82>
+ 704:	eadff0ef          	jal	ra,5b0 <puts@plt>
+ 708:	fec42783          	lw	a5,-20(s0)
+ 70c:	2781                	sext.w	a5,a5
+ 70e:	0007da63          	bgez	a5,722 <main+0x44>
  712:	00000517          	auipc	a0,0x0
- 716:	03650513          	addi	a0,a0,54 # 748 <main+0x6a>
+ 716:	05e50513          	addi	a0,a0,94 # 770 <main+0x92>
  71a:	e97ff0ef          	jal	ra,5b0 <puts@plt>
- 71e:	a039                	j	72c <main+0x4e>
- 720:	00000517          	auipc	a0,0x0
- 724:	04050513          	addi	a0,a0,64 # 760 <main+0x82>
- 728:	e89ff0ef          	jal	ra,5b0 <puts@plt>
- 72c:	4781                	li	a5,0
- 72e:	853e                	mv	a0,a5
- 730:	60e2                	ld	ra,24(sp)
- 732:	6442                	ld	s0,16(sp)
- 734:	6105                	addi	sp,sp,32
- 736:	8082                	ret
+ 71e:	4785                	li	a5,1
+ 720:	a01d                	j	746 <main+0x68>
+ 722:	fec42783          	lw	a5,-20(s0)
+ 726:	2781                	sext.w	a5,a5
+ 728:	eb81                	bnez	a5,738 <main+0x5a>
+ 72a:	00000517          	auipc	a0,0x0
+ 72e:	05650513          	addi	a0,a0,86 # 780 <main+0xa2>
+ 732:	e7fff0ef          	jal	ra,5b0 <puts@plt>
+ 736:	a039                	j	744 <main+0x66>
+ 738:	00000517          	auipc	a0,0x0
+ 73c:	06050513          	addi	a0,a0,96 # 798 <main+0xba>
+ 740:	e71ff0ef          	jal	ra,5b0 <puts@plt>
+ 744:	4781                	li	a5,0
+ 746:	853e                	mv	a0,a5
+ 748:	60e2                	ld	ra,24(sp)
+ 74a:	6442                	ld	s0,16(sp)
+ 74c:	6105                	addi	sp,sp,32
+ 74e:	8082                	ret

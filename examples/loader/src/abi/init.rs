@@ -1,5 +1,6 @@
-use axlog::{debug, info};
-use axtask::init_scheduler;
+use axhal::arch::read_page_table_root;
+use axlog::{debug, error, info};
+use axtask::{current, init_scheduler};
 
 use axstd::{
     print, println, process::exit, thread::sleep
@@ -13,6 +14,8 @@ use printf_compat::{format, output};
 
 use alloc::string::String;
 
+use crate::process::Process;
+
 type MainFn = unsafe extern "C" fn(argc: i32, argv: *mut *mut i8, envp: *mut *mut i8) -> i32;
 
 /// Description
@@ -20,27 +23,49 @@ type MainFn = unsafe extern "C" fn(argc: i32, argv: *mut *mut i8, envp: *mut *mu
 /// `__libc_start_main()` is not in the source standard; it is only in the binary standard. 
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_libc_start_main(
-	main: MainFn,
-	argc: i32,
+    main: MainFn,
+    argc: i32,
     argv: *mut *mut i8,
     _init: usize,
     _fini: usize,
 ) {
-	info!("[ABI:Init]: abi_libc_start_main");
-	info!("main: {:?}, argc: {}, argv: {:?}, _init: 0x{:x}, _fini: 0x{:x}", main, argc, argv, _init, _fini);
+    info!("[ABI:Init]: abi_libc_start_main");
+    info!("main: {:?}, argc: 0x{:x}, argv: {:x?}, _init: 0x{:x}, _fini: 0x{:x}", 
+          main, argc, argv, _init, _fini);
 
-	init_scheduler();
+    init_scheduler();
 
-    let main = unsafe {
-		mem::transmute::<usize, MainFn>( main as usize)
-	};
+    // 初始化运行中的进程
+    Process::init_running(main);
 
-	unsafe {
-		main(argc, argv, core::ptr::null_mut());
-	}
-
-	abi_fini();
+    abi_fini();
 }
+// pub extern "C" fn abi_libc_start_main(
+// 	main: MainFn,
+// 	argc: i32,
+//     argv: *mut *mut i8,
+//     _init: usize,
+//     _fini: usize,
+// ) {
+// 	info!("[ABI:Init]: abi_libc_start_main");
+// 	info!("main: {:?}, argc: 0x{:x}, argv: {:x?}, _init: 0x{:x}, _fini: 0x{:x}", main, argc, argv, _init, _fini);
+
+//     let xxx = read_page_table_root();
+
+//     info!("xxx: 0x{:x}", xxx);
+
+//     // init_scheduler();
+
+//     let main = unsafe {
+// 		mem::transmute::<usize, MainFn>( main as usize)
+// 	};
+
+// 	unsafe {
+// 		main(argc, argv, core::ptr::null_mut());
+// 	}
+
+// 	abi_fini();
+// }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_init() {
@@ -50,7 +75,6 @@ pub extern "C" fn abi_init() {
 #[unsafe(no_mangle)]
 pub extern "C" fn abi_fini() {
 	info!("[ABI:Init]: abi_fini");
-    exit(0)
 }
 
 #[unsafe(no_mangle)]

@@ -39,6 +39,11 @@ impl TrapFrame {
     pub const fn is_user(&self) -> bool {
         self.cs & 0b11 == 3
     }
+
+    /// set the return code
+    pub fn set_ret_code(&mut self, ret_value: usize) {
+        self.rax = ret_value as _;
+    }
 }
 
 #[repr(C)]

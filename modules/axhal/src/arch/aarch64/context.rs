@@ -15,6 +15,13 @@ pub struct TrapFrame {
     pub spsr: u64,
 }
 
+impl TrapFrame {
+    /// Sets the return code.
+    pub fn set_ret_code(&mut self, ret: usize) {
+        self.r[0] = ret;
+    }
+}
+
 /// FP & SIMD registers.
 #[repr(C, align(16))]
 #[derive(Debug, Default)]

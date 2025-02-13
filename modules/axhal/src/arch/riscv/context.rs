@@ -51,6 +51,13 @@ pub struct TrapFrame {
     pub sstatus: usize,
 }
 
+impl TrapFrame {
+    /// Sets the return code.
+    pub fn set_ret_code(&mut self, ret_value: usize) {
+        self.regs.a0 = ret_value;
+    }
+}
+
 /// Saved hardware states of a task.
 ///
 /// The context usually includes:
@@ -64,7 +71,7 @@ pub struct TrapFrame {
 /// and the next task restores its context from memory to CPU.
 #[allow(missing_docs)]
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TaskContext {
     pub ra: usize, // return address (x1)
     pub sp: usize, // stack pointer (x2)

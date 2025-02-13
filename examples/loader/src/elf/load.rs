@@ -11,10 +11,13 @@ use super::LoadError;
 
 pub const PLASH_START: usize = 0xffff_ffc0_2200_0000;
 pub const EXEC_ZONE_START: usize = 0xffff_ffc0_8010_0000;
-pub const MAX_APP_SIZE: usize = 0x100000;
+const MAX_APP_SIZE: usize = 0x100000;
 
-pub fn load_elf(elf_slice: &'static [u8], plash_start: usize) -> u64 {
-
+pub fn load_elf() -> u64 {
+    debug!("Load payload ...");
+    let elf_size = unsafe { *(PLASH_START as *const usize) };
+    debug!("ELF size: 0x{:x}", elf_size);
+    let elf_slice = unsafe { from_raw_parts((PLASH_START + 0x8) as *const u8, elf_size) };
     let elf = ElfFile::new(elf_slice).expect("Failed to parse ELF");
     
     // 检查 ELF 头
@@ -143,7 +146,7 @@ fn load_segment(run_code: &mut [u8], elf_slice: &[u8], p_vaddr: usize, p_offset:
     }
 }
 
-pub fn modify_rela_plt(elf: &ElfFile) {
+fn modify_rela_plt(elf: &ElfFile) {
     if let Some(rela_plt) = elf.find_section_by_name(".rela.plt") {
         let rela_data = match rela_plt.get_data(elf) {
             Ok(xmas_elf::sections::SectionData::Rela64(data)) => data,
@@ -172,7 +175,7 @@ pub fn modify_rela_plt(elf: &ElfFile) {
     }
 }
 
-pub fn modify_rela_dyn(elf: &ElfFile) {
+fn modify_rela_dyn(elf: &ElfFile) {
     if let Some(rela_section) = elf.find_section_by_name(".rela.dyn") {
         let rela_data = match rela_section.get_data(elf) {
             Ok(xmas_elf::sections::SectionData::Rela64(data)) => data,
